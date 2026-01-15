@@ -31,11 +31,30 @@ COPY app app/
 COPY tests tests/
 COPY app/gunicorn_logging.conf .
 
+# Copy local torch and torchaudio wheel files if they exist
+COPY torch-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl* ./
+COPY torchaudio-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl* ./
+
 # Install Python dependencies using UV with pyproject.toml
 # UV automatically selects CUDA 12.8 wheels on Linux
-RUN uv sync --frozen --no-dev \
+# Temporarily remove torch and torchaudio from pyproject.toml, sync dependencies, then install local wheels
+RUN if [ -f torch-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl ] || [ -f torchaudio-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl ]; then \
+        cp pyproject.toml pyproject.toml.bak \
+        && sed -i '/torch<=2.8.0/d' pyproject.toml \
+        && sed -i '/torchaudio<=2.8.0/d' pyproject.toml \
+        && uv sync --frozen --no-dev \
+        && if [ -f torch-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl ]; then \
+            uv pip install --system ./torch-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl; \
+        fi \
+        && if [ -f torchaudio-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl ]; then \
+            uv pip install --system ./torchaudio-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl; \
+        fi \
+        && mv pyproject.toml.bak pyproject.toml; \
+    else \
+        uv sync --frozen --no-dev; \
+    fi \
     && uv pip install --system ctranslate2==4.6.0 \
-    && rm -rf /root/.cache /tmp/* /root/.uv /var/cache/* \
+    && rm -rf /root/.cache /tmp/* /root/.uv /var/cache/* torch-*.whl torchaudio-*.whl \
     && find /usr/local -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local -type f -name '*.pyc' -delete \
     && find /usr/local -type f -name '*.pyo' -delete
@@ -46,4 +65,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl --fail http://localhost:8000/health || exit 1
 
-ENTRYPOINT ["uv", "run", "--no-sync", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "0", "--log-config", "gunicorn_logging.conf", "app.main:app", "-k", "uvicorn.workers.UvicornWorker"]
+ENTRYPOINT ["uv", "run", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "0", "--log-config", "gunicorn_logging.conf", "app.main:app", "-k", "uvicorn.workers.UvicornWorker"]
