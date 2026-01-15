@@ -17,8 +17,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      # Mount cache directory for persistent model storage
+      # Create directory on host if it doesn't exist: sudo mkdir -p /data/whisperx/cache
       - "/data/whisperx/cache:/root/.cache"
-      - "/data/whisperx/tmp:/tmp"
+      # Removed /tmp mount to avoid disk space issues - /tmp is now used only inside container
 volumes:
   whisperx-models-cache:
   whisperx-app-volume:
