@@ -8,6 +8,7 @@ import torch
 from whisperx import align, load_align_model
 
 from app.core.logging import logger
+from app.utils.progress import ModelLoadingProgress
 
 
 class WhisperXAlignmentService:
@@ -33,6 +34,7 @@ class WhisperXAlignmentService:
         align_model: str | None = None,
         interpolate_method: str = "nearest",
         return_char_alignments: bool = False,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         """
         Align transcript to audio using WhisperX alignment.
@@ -45,16 +47,11 @@ class WhisperXAlignmentService:
             align_model: Specific alignment model to use (optional)
             interpolate_method: Method for handling non-aligned words
             return_char_alignments: Whether to return character-level alignments
+            progress_callback: Callback для обновления прогресса (опционально)
 
         Returns:
             Dictionary containing aligned transcript
         """
-        self.logger.debug(
-            "Starting alignment for language code: %s on device: %s",
-            language_code,
-            device,
-        )
-
         # Log GPU memory before loading model
         if torch.cuda.is_available():
             self.logger.debug(
@@ -62,21 +59,24 @@ class WhisperXAlignmentService:
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
-        self.logger.debug(
-            "Loading align model with config - language_code: %s, device: %s, "
-            "interpolate_method: %s, return_char_alignments: %s",
-            language_code,
-            device,
-            interpolate_method,
-            return_char_alignments,
-        )
+        # Загрузка модели выравнивания с progress bar
+        model_name = align_model or f"default ({language_code})"
+        model_progress = ModelLoadingProgress(model_name, "модели выравнивания")
+        model_progress.start()
+        model_progress.update(30)
 
-        # Load alignment model
         align_model_loaded, align_metadata = load_align_model(
             language_code=language_code, device=device, model_name=align_model
         )
 
-        # Perform alignment
+        model_progress.update(100)
+        model_progress.complete()
+
+        if progress_callback:
+            progress_callback.update_step(50)  # Модель загружена - 50% выравнивания
+
+        # Выравнивание
+        self.logger.info(f"   🔗 Начало выравнивания (метод: {interpolate_method})")
         result = align(
             transcript,
             align_model_loaded,
@@ -86,6 +86,9 @@ class WhisperXAlignmentService:
             interpolate_method=interpolate_method,
             return_char_alignments=return_char_alignments,
         )
+
+        if progress_callback:
+            progress_callback.update_step(100)  # Выравнивание завершено
 
         # Log GPU memory before cleanup
         if torch.cuda.is_available():
@@ -107,7 +110,6 @@ class WhisperXAlignmentService:
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
-        self.logger.debug("Completed alignment")
         return result  # type: ignore[no-any-return]
 
     def load_model(

@@ -8,6 +8,7 @@ import torch
 from whisperx import load_model
 
 from app.core.logging import logger
+from app.utils.progress import ModelLoadingProgress
 
 
 class WhisperXTranscriptionService:
@@ -37,6 +38,7 @@ class WhisperXTranscriptionService:
         device_index: int,
         compute_type: str,
         threads: int,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         """
         Transcribe audio using WhisperX model.
@@ -54,21 +56,18 @@ class WhisperXTranscriptionService:
             device_index: Device index for multi-GPU setups
             compute_type: Computation precision ('float16', 'int8', etc.)
             threads: Number of threads to use
+            progress_callback: Callback для обновления прогресса (опционально)
 
         Returns:
             Dictionary containing transcription results
         """
-        self.logger.debug(
-            "Starting transcription with Whisper model: %s on device: %s",
-            model,
-            device,
-        )
-
         # Log GPU memory before loading model
         if torch.cuda.is_available():
+            gpu_memory_before = torch.cuda.memory_allocated() / 1024**2
+            gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**2
             self.logger.debug(
-                f"GPU memory before loading model - used: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
-                f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
+                f"GPU memory before loading model - used: {gpu_memory_before:.2f} MB, "
+                f"available: {gpu_memory_total:.2f} MB"
             )
 
         # Set thread count
@@ -77,18 +76,11 @@ class WhisperXTranscriptionService:
             torch.set_num_threads(threads)
             faster_whisper_threads = threads
 
-        self.logger.debug(
-            "Loading model with config - model: %s, device: %s, compute_type: %s, "
-            "threads: %d, task: %s, language: %s",
-            model,
-            device,
-            compute_type,
-            faster_whisper_threads,
-            task,
-            language,
-        )
+        # Загрузка модели с progress bar
+        model_progress = ModelLoadingProgress(model, "модели транскрипции")
+        model_progress.start()
+        model_progress.update(30)  # Начало загрузки
 
-        # Load model
         loaded_model = load_model(
             model,
             device,
@@ -101,12 +93,20 @@ class WhisperXTranscriptionService:
             threads=faster_whisper_threads,
         )
 
-        self.logger.debug("Transcription model loaded successfully")
+        model_progress.update(100)
+        model_progress.complete()
 
-        # Transcribe
+        if progress_callback:
+            progress_callback.update_step(50)  # Модель загружена - 50% транскрипции
+
+        # Транскрипция
+        self.logger.info(f"   🎤 Начало транскрипции (batch_size={batch_size}, chunk_size={chunk_size})")
         result = loaded_model.transcribe(
             audio=audio, batch_size=batch_size, chunk_size=chunk_size, language=language
         )
+
+        if progress_callback:
+            progress_callback.update_step(100)  # Транскрипция завершена
 
         # Log GPU memory before cleanup
         if torch.cuda.is_available():
@@ -127,7 +127,6 @@ class WhisperXTranscriptionService:
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
-        self.logger.debug("Completed transcription")
         return result  # type: ignore[no-any-return]
 
     def load_model(

@@ -9,6 +9,7 @@ import torch
 from whisperx.diarize import DiarizationPipeline
 
 from app.core.logging import logger
+from app.utils.progress import ModelLoadingProgress
 
 
 class WhisperXDiarizationService:
@@ -36,6 +37,7 @@ class WhisperXDiarizationService:
         device: str,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        progress_callback: Any = None,
     ) -> pd.DataFrame:
         """
         Identify speakers using PyAnnote diarization model.
@@ -45,12 +47,11 @@ class WhisperXDiarizationService:
             device: Device to use ('cpu' or 'cuda')
             min_speakers: Minimum number of speakers (optional)
             max_speakers: Maximum number of speakers (optional)
+            progress_callback: Callback для обновления прогресса (опционально)
 
         Returns:
             DataFrame with speaker segments
         """
-        self.logger.debug("Starting diarization with device: %s", device)
-
         # Log GPU memory before loading model
         if torch.cuda.is_available():
             self.logger.debug(
@@ -58,13 +59,28 @@ class WhisperXDiarizationService:
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
-        # Load model
+        # Загрузка модели диаризации с progress bar
+        model_progress = ModelLoadingProgress("PyAnnote", "модели диаризации")
+        model_progress.start()
+        model_progress.update(30)
+
         model = DiarizationPipeline(use_auth_token=self.hf_token, device=device)
 
-        # Perform diarization
+        model_progress.update(100)
+        model_progress.complete()
+
+        if progress_callback:
+            progress_callback.update_step(50)  # Модель загружена - 50% диаризации
+
+        # Диаризация
+        speakers_info = f"min={min_speakers}, max={max_speakers}" if min_speakers or max_speakers else "автоопределение"
+        self.logger.info(f"   🎭 Начало диаризации (спикеры: {speakers_info})")
         result = model(
             audio=audio, min_speakers=min_speakers, max_speakers=max_speakers
         )
+
+        if progress_callback:
+            progress_callback.update_step(100)  # Диаризация завершена
 
         # Log GPU memory before cleanup
         if torch.cuda.is_available():
@@ -85,7 +101,6 @@ class WhisperXDiarizationService:
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
-        self.logger.debug("Completed diarization with device: %s", device)
         return result  # type: ignore[no-any-return]
 
     def load_model(self, device: str, hf_token: str) -> None:

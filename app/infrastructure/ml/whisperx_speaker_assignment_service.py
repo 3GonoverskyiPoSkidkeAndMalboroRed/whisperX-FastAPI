@@ -24,6 +24,7 @@ class WhisperXSpeakerAssignmentService:
         self,
         diarization_segments: pd.DataFrame,
         transcript: dict[str, Any],
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         """
         Assign speaker labels to transcript words using WhisperX.
@@ -31,14 +32,19 @@ class WhisperXSpeakerAssignmentService:
         Args:
             diarization_segments: DataFrame with speaker segments
             transcript: Aligned transcript dictionary
+            progress_callback: Callback для обновления прогресса (опционально)
 
         Returns:
             Dictionary containing transcript with speaker labels
         """
-        self.logger.debug("Starting to combine transcript with diarization results")
+        if progress_callback:
+            progress_callback.update_step(30)
+
+        self.logger.info("   👥 Начало назначения спикеров транскрипту")
 
         result = whisperx.assign_word_speakers(diarization_segments, transcript)
 
-        self.logger.debug("Completed combining transcript with diarization results")
+        if progress_callback:
+            progress_callback.update_step(100)
 
         return result  # type: ignore[no-any-return]

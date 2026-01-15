@@ -17,6 +17,7 @@ from whisperx.diarize import DiarizationPipeline
 from app.callbacks import post_task_callback
 from app.core.config import Config
 from app.core.logging import logger
+from app.utils.progress import TranscriptionProgress
 from app.domain.repositories.task_repository import ITaskRepository
 from app.domain.services.alignment_service import IAlignmentService
 from app.domain.services.diarization_service import IDiarizationService
@@ -296,26 +297,19 @@ def process_audio_common(
     session = SessionLocal()
     repository: ITaskRepository = SQLAlchemyTaskRepository(session)
 
+    progress = None
     try:
         start_time = datetime.now()
-        logger.info(
-            "Starting speech-to-text processing for identifier: %s",
-            params.identifier,
-        )
+        
+        # Инициализация progress bar
+        progress = TranscriptionProgress(params.identifier, total_steps=4)
+        progress.start()
 
-        logger.debug(
-            "Transcription parameters - task: %s, language: %s, batch_size: %d, chunk_size: %d, model: %s, device: %s, device_index: %d, compute_type: %s, threads: %d",
-            params.whisper_model_params.task.value,
-            params.whisper_model_params.language,
-            params.whisper_model_params.batch_size,
-            params.whisper_model_params.chunk_size,
-            params.whisper_model_params.model.value,
-            params.whisper_model_params.device.value,
-            params.whisper_model_params.device_index,
-            params.whisper_model_params.compute_type.value,
-            params.whisper_model_params.threads,
+        # Этап 1: Транскрипция
+        progress.start_step(
+            "Транскрипция",
+            f"Модель: {params.whisper_model_params.model.value}, Язык: {params.whisper_model_params.language}, Устройство: {params.whisper_model_params.device.value}"
         )
-
         segments_before_alignment = transcription_svc.transcribe(
             audio=params.audio,
             task=params.whisper_model_params.task.value,
@@ -329,14 +323,14 @@ def process_audio_common(
             device_index=params.whisper_model_params.device_index,
             compute_type=params.whisper_model_params.compute_type.value,
             threads=params.whisper_model_params.threads,
+            progress_callback=progress,
         )
+        progress.complete_step("Транскрипция", f"Язык определен: {segments_before_alignment.get('language', 'неизвестен')}")
 
-        logger.debug(
-            "Alignment parameters - align_model: %s, interpolate_method: %s, return_char_alignments: %s, language_code: %s",
-            params.alignment_params.align_model,
-            params.alignment_params.interpolate_method,
-            params.alignment_params.return_char_alignments,
-            segments_before_alignment["language"],
+        # Этап 2: Выравнивание
+        progress.start_step(
+            "Выравнивание",
+            f"Модель: {params.alignment_params.align_model or 'по умолчанию'}, Метод: {params.alignment_params.interpolate_method}"
         )
         segments_transcript = alignment_svc.align(
             transcript=segments_before_alignment["segments"],
@@ -346,37 +340,41 @@ def process_audio_common(
             align_model=params.alignment_params.align_model,
             interpolate_method=params.alignment_params.interpolate_method,
             return_char_alignments=params.alignment_params.return_char_alignments,
+            progress_callback=progress,
         )
         transcript = AlignedTranscription(**segments_transcript)
         # removing words within each segment that have missing start, end, or score values
         filtered_transcript = filter_aligned_transcription(transcript)
         transcript_dict = filtered_transcript.model_dump()
+        progress.complete_step("Выравнивание", f"Сегментов обработано: {len(transcript_dict.get('segments', []))}")
 
-        logger.debug(
-            "Diarization parameters - device: %s, min_speakers: %s, max_speakers: %s",
-            params.whisper_model_params.device.value,
-            params.diarization_params.min_speakers,
-            params.diarization_params.max_speakers,
+        # Этап 3: Диаризация
+        speakers_info = f"min={params.diarization_params.min_speakers}, max={params.diarization_params.max_speakers}" if params.diarization_params.min_speakers or params.diarization_params.max_speakers else "автоопределение"
+        progress.start_step(
+            "Диаризация",
+            f"Устройство: {params.whisper_model_params.device.value}, Спикеры: {speakers_info}"
         )
         diarization_segments = diarization_svc.diarize(
             audio=params.audio,
             device=params.whisper_model_params.device.value,
             min_speakers=params.diarization_params.min_speakers,
             max_speakers=params.diarization_params.max_speakers,
+            progress_callback=progress,
         )
+        num_speakers = len(diarization_segments['speaker'].unique()) if hasattr(diarization_segments, 'speaker') else "неизвестно"
+        progress.complete_step("Диаризация", f"Обнаружено спикеров: {num_speakers}")
 
-        logger.debug("Starting to combine transcript with diarization results")
-        result = speaker_svc.assign_speakers(diarization_segments, transcript_dict)
-
-        logger.debug("Completed combining transcript with diarization results")
+        # Этап 4: Назначение спикеров
+        progress.start_step(
+            "Назначение спикеров",
+            "Объединение результатов диаризации и транскрипции"
+        )
+        result = speaker_svc.assign_speakers(diarization_segments, transcript_dict, progress_callback=progress)
+        progress.complete_step("Назначение спикеров", "Транскрипция с метками спикеров готова")
 
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
-        logger.info(
-            "Completed speech-to-text processing for identifier: %s. Duration: %ss",
-            params.identifier,
-            duration,
-        )
+        progress.finish(duration)
 
         repository.update(
             identifier=params.identifier,
@@ -390,6 +388,8 @@ def process_audio_common(
         )
 
     except (RuntimeError, ValueError, KeyError) as e:
+        if progress:
+            progress.error(str(e))
         logger.error(
             "Speech-to-text processing failed for identifier: %s. Error: %s",
             params.identifier,
@@ -404,6 +404,9 @@ def process_audio_common(
         )
 
     except MemoryError as e:
+        error_msg = f"Недостаточно памяти. Error: {str(e)}"
+        if progress:
+            progress.error(error_msg)
         logger.error(
             f"Task failed for identifier {params.identifier} due to out of memory. Error: {str(e)}"
         )

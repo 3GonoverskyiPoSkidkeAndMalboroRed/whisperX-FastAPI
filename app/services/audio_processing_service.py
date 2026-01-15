@@ -14,6 +14,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.logging import logger
+from app.utils.progress import TranscriptionProgress
 from app.domain.repositories.task_repository import ITaskRepository
 from app.domain.services.alignment_service import IAlignmentService
 from app.domain.services.diarization_service import IDiarizationService
@@ -144,9 +145,21 @@ def process_transcribe(
         vad_options_params (VADOptions): The VAD options.
         transcription_service: The transcription service to use.
     """
+    # Create repository for this background task
+    session = SessionLocal()
+    repository: ITaskRepository = SQLAlchemyTaskRepository(session)
+    progress = None
 
-    def transcribe_task() -> Any:
-        return transcription_service.transcribe(
+    try:
+        start_time = datetime.now()
+        progress = TranscriptionProgress(identifier, total_steps=1)
+        progress.start()
+        progress.start_step(
+            "Транскрипция",
+            f"Модель: {model_params.model.value}, Язык: {model_params.language}, Устройство: {model_params.device.value}"
+        )
+
+        result = transcription_service.transcribe(
             audio=audio,
             task=model_params.task.value,
             asr_options=asr_options_params.model_dump(),
@@ -159,13 +172,56 @@ def process_transcribe(
             device_index=model_params.device_index,
             compute_type=model_params.compute_type.value,
             threads=model_params.threads,
+            progress_callback=progress,
+        )
+        
+        progress.complete_step("Транскрипция", f"Язык определен: {result.get('language', 'неизвестен')}")
+        
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        progress.finish(duration)
+        
+        repository.update(
+            identifier=identifier,
+            update_data={
+                "status": TaskStatus.completed,
+                "result": result,
+                "duration": duration,
+                "start_time": start_time,
+                "end_time": end_time,
+            },
         )
 
-    process_audio_task(
-        transcribe_task,
-        identifier,
-        "transcription",
-    )
+    except (
+        ValueError,
+        TypeError,
+        RuntimeError,
+        MemoryError,
+        TranscriptionFailedError,
+        AudioProcessingError,
+        InsufficientMemoryError,
+    ) as e:
+        if progress:
+            progress.error(str(e))
+        logger.error(
+            f"Task transcription failed for identifier {identifier}. Error: {str(e)}"
+        )
+        repository.update(
+            identifier=identifier,
+            update_data={"status": TaskStatus.failed, "error": str(e)},
+        )
+    except Exception as e:
+        if progress:
+            progress.error(str(e))
+        logger.error(
+            f"Task transcription failed for identifier {identifier} with unexpected error. Error: {str(e)}"
+        )
+        repository.update(
+            identifier=identifier,
+            update_data={"status": TaskStatus.failed, "error": str(e)},
+        )
+    finally:
+        session.close()
 
 
 def process_diarize(
