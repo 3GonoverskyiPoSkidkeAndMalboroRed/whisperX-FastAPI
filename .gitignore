@@ -13,3 +13,6 @@ pytest-report.xml
 .ruff_cache
 .pytest_cache
 docs/stories/
+
+torch-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl
+torchaudio-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl
