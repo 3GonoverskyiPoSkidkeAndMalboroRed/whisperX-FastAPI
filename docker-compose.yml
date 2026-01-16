@@ -15,7 +15,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8000:8000"
+      - "8123:8000"
     volumes:
       # Mount cache directory for persistent model storage
       # Create directory on host if it doesn't exist: sudo mkdir -p /data/whisperx/cache
