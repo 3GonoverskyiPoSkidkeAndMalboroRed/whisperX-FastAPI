@@ -1,7 +1,6 @@
 """This module contains the task management routes for the FastAPI application."""
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import PlainTextResponse
 
 from app.api.dependencies import get_task_management_service
 from app.api.mappers.task_mapper import TaskMapper
@@ -10,7 +9,6 @@ from app.core.exceptions import TaskNotFoundError
 from app.core.logging import logger
 from app.schemas import Metadata, Response, Result
 from app.services.task_management_service import TaskManagementService
-from app.utils.transcript_formatter import format_transcript_to_text
 
 task_router = APIRouter()
 
@@ -80,47 +78,6 @@ async def get_transcription_status(
         ),
         error=task.error,
     )
-
-
-@task_router.get("/task/{identifier}/text", tags=["Tasks Management"])
-async def get_transcription_text(
-    identifier: str,
-    service: TaskManagementService = Depends(get_task_management_service),
-) -> PlainTextResponse:
-    """
-    Получить результат транскрипции в текстовом формате.
-
-    Возвращает результат транскрипции в читаемом текстовом формате:
-    [SPEAKER_00]: Текст сегмента.
-    [SPEAKER_01]: Другой текст.
-
-    Args:
-        identifier (str): Идентификатор задачи.
-        service: Сервис управления задачами.
-
-    Returns:
-        PlainTextResponse: Текст транскрипции в читаемом формате.
-
-    Raises:
-        TaskNotFoundError: Если задача не найдена.
-    """
-    logger.info("Retrieving text format for task ID: %s", identifier)
-    task = service.get_task(identifier)
-
-    if task is None:
-        logger.error("Task ID not found: %s", identifier)
-        raise TaskNotFoundError(identifier)
-
-    if task.status != "completed":
-        logger.warning("Task %s is not completed, status: %s", identifier, task.status)
-        return PlainTextResponse(
-            content=f"Задача еще не завершена. Статус: {task.status}",
-            status_code=200,
-        )
-
-    formatted_text = format_transcript_to_text(task.result)
-    logger.info("Text format retrieved for task ID: %s", identifier)
-    return PlainTextResponse(content=formatted_text, media_type="text/plain; charset=utf-8")
 
 
 @task_router.delete("/task/{identifier}/delete", tags=["Tasks Management"])
