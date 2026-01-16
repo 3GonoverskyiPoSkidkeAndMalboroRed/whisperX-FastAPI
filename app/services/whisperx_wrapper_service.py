@@ -416,6 +416,20 @@ def process_audio_common(
         )
 
     finally:
+        # Clean up temporary files
+        if params.temp_file_path:
+            try:
+                import os
+                if os.path.exists(params.temp_file_path):
+                    os.unlink(params.temp_file_path)
+                    logger.debug("Cleaned up temporary file: %s", params.temp_file_path)
+            except Exception as e:
+                logger.warning(
+                    "Failed to clean up temporary file %s: %s",
+                    params.temp_file_path,
+                    str(e),
+                )
+
         try:
             if params.callback_url:
                 task = repository.get_by_id(params.identifier)

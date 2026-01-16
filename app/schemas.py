@@ -404,6 +404,7 @@ class SpeechToTextProcessingParams(BaseModel):
     alignment_params: AlignmentParams
     diarization_params: DiarizationParams
     callback_url: str | None = None
+    temp_file_path: str | None = None  # Path to temporary file that should be cleaned up after processing
 
 
 class TaskType(str, Enum):

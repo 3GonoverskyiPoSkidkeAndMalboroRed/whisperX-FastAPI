@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from whisperx import align, load_align_model
 
+from app.core.exceptions import AudioProcessingError
 from app.core.logging import logger
 from app.utils.progress import ModelLoadingProgress
 
@@ -65,9 +66,22 @@ class WhisperXAlignmentService:
         model_progress.start()
         model_progress.update(30)
 
-        align_model_loaded, align_metadata = load_align_model(
-            language_code=language_code, device=device, model_name=align_model
-        )
+        try:
+            align_model_loaded, align_metadata = load_align_model(
+                language_code=language_code, device=device, model_name=align_model
+            )
+        except OSError as e:
+            if "No space left on device" in str(e) or "os error 28" in str(e):
+                error_msg = (
+                    f"Недостаточно места на диске при загрузке модели выравнивания для языка {language_code}. "
+                    f"Ошибка: {str(e)}"
+                )
+                self.logger.error(error_msg)
+                raise AudioProcessingError(
+                    reason=error_msg,
+                    original_error=e,
+                ) from e
+            raise
 
         model_progress.update(100)
         model_progress.complete()

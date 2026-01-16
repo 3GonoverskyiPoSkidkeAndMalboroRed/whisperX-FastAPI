@@ -7,7 +7,9 @@ import numpy as np
 import torch
 from whisperx import load_model
 
+from app.core.exceptions import AudioProcessingError
 from app.core.logging import logger
+from app.utils.disk_space import check_model_download_space, get_huggingface_cache_dir
 from app.utils.progress import ModelLoadingProgress
 
 
@@ -76,12 +78,38 @@ class WhisperXTranscriptionService:
             torch.set_num_threads(threads)
             faster_whisper_threads = threads
 
+        # Проверка доступного места перед загрузкой модели
+        # Приблизительные размеры моделей в MB
+        model_sizes = {
+            "tiny": 75,
+            "base": 142,
+            "small": 466,
+            "medium": 1420,
+            "large": 2870,
+            "large-v2": 2870,
+            "large-v3": 3087,
+        }
+        estimated_size_mb = model_sizes.get(model, 3000)  # По умолчанию 3GB для больших моделей
+
+        cache_dir = get_huggingface_cache_dir()
+        if not check_model_download_space(estimated_size_mb, cache_dir):
+            error_msg = (
+                f"Недостаточно места на диске для загрузки модели {model}. "
+                f"Требуется: ~{estimated_size_mb} MB. "
+                f"Проверьте доступное место в {cache_dir}"
+            )
+            self.logger.error(error_msg)
+            raise AudioProcessingError(
+                reason=error_msg,
+            )
+
         # Загрузка модели с progress bar
         model_progress = ModelLoadingProgress(model, "модели транскрипции")
         model_progress.start()
         model_progress.update(30)  # Начало загрузки
 
-        loaded_model = load_model(
+        try:
+            loaded_model = load_model(
             model,
             device,
             device_index=device_index,
@@ -90,8 +118,20 @@ class WhisperXTranscriptionService:
             vad_options=vad_options,
             language=language,
             task=task,
-            threads=faster_whisper_threads,
-        )
+                threads=faster_whisper_threads,
+            )
+        except OSError as e:
+            if "No space left on device" in str(e) or "os error 28" in str(e):
+                error_msg = (
+                    f"Недостаточно места на диске при загрузке модели {model}. "
+                    f"Ошибка: {str(e)}"
+                )
+                self.logger.error(error_msg)
+                raise AudioProcessingError(
+                    reason=error_msg,
+                    original_error=e,
+                ) from e
+            raise
 
         model_progress.update(100)
         model_progress.complete()

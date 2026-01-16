@@ -127,6 +127,7 @@ async def speech_to_text(
         alignment_params=align_params,
         diarization_params=diarize_params,
         callback_url=callback_url,
+        temp_file_path=temp_file,
     )
 
     background_tasks.add_task(process_audio_common, audio_params)
@@ -213,6 +214,7 @@ async def speech_to_text_url(
         alignment_params=align_params,
         diarization_params=diarize_params,
         callback_url=callback_url,
+        temp_file_path=temp_audio_file,
     )
 
     background_tasks.add_task(process_audio_common, audio_params)
