@@ -1,6 +1,7 @@
 """WhisperX implementation of alignment service."""
 
 import gc
+import threading
 from typing import Any
 
 import numpy as np
@@ -18,6 +19,8 @@ class WhisperXAlignmentService:
 
     This service wraps the WhisperX alignment functionality to align
     transcripts to audio with precise word-level timestamps.
+    
+    Models are cached in memory to avoid reloading on each request.
     """
 
     def __init__(self) -> None:
@@ -25,6 +28,10 @@ class WhisperXAlignmentService:
         self.model: Any = None
         self.metadata: Any = None
         self.logger = logger
+        # Кэш моделей: ключ - строка параметров, значение - кортеж (модель, metadata)
+        self._model_cache: dict[str, tuple[Any, Any]] = {}
+        # Блокировка для потокобезопасности
+        self._cache_lock = threading.Lock()
 
     def align(
         self,
@@ -60,31 +67,48 @@ class WhisperXAlignmentService:
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
-        # Загрузка модели выравнивания с progress bar
-        model_name = align_model or f"default ({language_code})"
-        model_progress = ModelLoadingProgress(model_name, "модели выравнивания")
-        model_progress.start()
-        model_progress.update(30)
+        # Создаём ключ кэша на основе параметров модели
+        cache_key = self._create_cache_key(
+            language_code=language_code,
+            device=device,
+            align_model=align_model,
+        )
 
-        try:
-            align_model_loaded, align_metadata = load_align_model(
-                language_code=language_code, device=device, model_name=align_model
-            )
-        except OSError as e:
-            if "No space left on device" in str(e) or "os error 28" in str(e):
-                error_msg = (
-                    f"Недостаточно места на диске при загрузке модели выравнивания для языка {language_code}. "
-                    f"Ошибка: {str(e)}"
-                )
-                self.logger.error(error_msg)
-                raise AudioProcessingError(
-                    reason=error_msg,
-                    original_error=e,
-                ) from e
-            raise
+        # Проверяем кэш и загружаем модель только если её нет
+        with self._cache_lock:
+            if cache_key in self._model_cache:
+                self.logger.info(f"   ✅ Использование кэшированной модели выравнивания: {language_code}")
+                align_model_loaded, align_metadata = self._model_cache[cache_key]
+            else:
+                # Загрузка модели выравнивания с progress bar
+                model_name = align_model or f"default ({language_code})"
+                model_progress = ModelLoadingProgress(model_name, "модели выравнивания")
+                model_progress.start()
+                model_progress.update(30)
 
-        model_progress.update(100)
-        model_progress.complete()
+                try:
+                    self.logger.info(f"   📥 Загрузка модели выравнивания: {model_name}")
+                    align_model_loaded, align_metadata = load_align_model(
+                        language_code=language_code, device=device, model_name=align_model
+                    )
+                    # Сохраняем модель в кэш
+                    self._model_cache[cache_key] = (align_model_loaded, align_metadata)
+                    self.logger.info(f"   💾 Модель выравнивания сохранена в кэш: {model_name}")
+                except OSError as e:
+                    if "No space left on device" in str(e) or "os error 28" in str(e):
+                        error_msg = (
+                            f"Недостаточно места на диске при загрузке модели выравнивания для языка {language_code}. "
+                            f"Ошибка: {str(e)}"
+                        )
+                        self.logger.error(error_msg)
+                        raise AudioProcessingError(
+                            reason=error_msg,
+                            original_error=e,
+                        ) from e
+                    raise
+
+                model_progress.update(100)
+                model_progress.complete()
 
         if progress_callback:
             progress_callback.update_step(50)  # Модель загружена - 50% выравнивания
@@ -104,27 +128,35 @@ class WhisperXAlignmentService:
         if progress_callback:
             progress_callback.update_step(100)  # Выравнивание завершено
 
-        # Log GPU memory before cleanup
+        # НЕ удаляем модель - она остаётся в кэше для повторного использования
+        # Log GPU memory after alignment
         if torch.cuda.is_available():
             self.logger.debug(
-                f"GPU memory before cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
-                f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
-            )
-
-        # Clean up model
-        gc.collect()
-        torch.cuda.empty_cache()
-        del align_model_loaded
-        del align_metadata
-
-        # Log GPU memory after cleanup
-        if torch.cuda.is_available():
-            self.logger.debug(
-                f"GPU memory after cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
+                f"GPU memory after alignment: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
         return result  # type: ignore[no-any-return]
+
+    def _create_cache_key(
+        self,
+        language_code: str,
+        device: str,
+        align_model: str | None,
+    ) -> str:
+        """
+        Создаёт ключ кэша на основе параметров модели выравнивания.
+        
+        Args:
+            language_code: Код языка
+            device: Устройство
+            align_model: Название модели (опционально)
+            
+        Returns:
+            Строковый ключ для кэша
+        """
+        model_name = align_model or "default"
+        return f"{language_code}_{device}_{model_name}"
 
     def load_model(
         self, language_code: str, device: str, model_name: str | None = None
@@ -142,14 +174,30 @@ class WhisperXAlignmentService:
             language_code=language_code, device=device, model_name=model_name
         )
 
-    def unload_model(self) -> None:
-        """Unload alignment model and free GPU memory."""
+    def unload_model(self, cache_key: str | None = None) -> None:
+        """
+        Unload alignment model and free GPU memory.
+        
+        Args:
+            cache_key: Ключ модели для удаления из кэша. Если None, удаляет все модели.
+        """
+        with self._cache_lock:
+            if cache_key:
+                if cache_key in self._model_cache:
+                    del self._model_cache[cache_key]
+                    self.logger.debug(f"Alignment model {cache_key} unloaded from cache")
+            else:
+                # Удаляем все модели из кэша
+                self._model_cache.clear()
+                self.logger.debug("All alignment models unloaded from cache")
+        
         if self.model:
             del self.model
             self.model = None
         if self.metadata:
             del self.metadata
             self.metadata = None
+        
         gc.collect()
         torch.cuda.empty_cache()
-        self.logger.debug("Alignment model unloaded and GPU memory cleared")
+        self.logger.debug("GPU memory cleared")

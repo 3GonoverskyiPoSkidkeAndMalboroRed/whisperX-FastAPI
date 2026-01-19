@@ -23,6 +23,21 @@ def set_container(container: Container) -> None:
     _container = container
 
 
+def get_container() -> Container | None:
+    """
+    Get the global container instance.
+    
+    Returns:
+        Container instance if initialized, None otherwise.
+        
+    Note:
+        This function is primarily for use in background tasks where
+        dependency injection is not available. For regular endpoints,
+        use the specific service getters instead.
+    """
+    return _container
+
+
 def get_task_repository() -> Generator[ITaskRepository, None, None]:
     """
     Provide a task repository implementation for dependency injection.

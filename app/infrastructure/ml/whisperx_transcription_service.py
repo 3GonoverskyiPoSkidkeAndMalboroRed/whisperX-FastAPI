@@ -1,6 +1,7 @@
 """WhisperX implementation of transcription service."""
 
 import gc
+import threading
 from typing import Any
 
 import numpy as np
@@ -19,12 +20,18 @@ class WhisperXTranscriptionService:
 
     This service wraps the WhisperX library to provide transcription
     functionality following the ITranscriptionService interface contract.
+    
+    Models are cached in memory to avoid reloading on each request.
     """
 
     def __init__(self) -> None:
         """Initialize the transcription service."""
         self.model: Any = None
         self.logger = logger
+        # Кэш моделей: ключ - строка параметров, значение - загруженная модель
+        self._model_cache: dict[str, Any] = {}
+        # Блокировка для потокобезопасности
+        self._cache_lock = threading.Lock()
 
     def transcribe(
         self,
@@ -78,63 +85,87 @@ class WhisperXTranscriptionService:
             torch.set_num_threads(threads)
             faster_whisper_threads = threads
 
-        # Проверка доступного места перед загрузкой модели
-        # Приблизительные размеры моделей в MB
-        model_sizes = {
-            "tiny": 75,
-            "base": 142,
-            "small": 466,
-            "medium": 1420,
-            "large": 2870,
-            "large-v2": 2870,
-            "large-v3": 3087,
-        }
-        estimated_size_mb = model_sizes.get(model, 3000)  # По умолчанию 3GB для больших моделей
-
-        cache_dir = get_huggingface_cache_dir()
-        if not check_model_download_space(estimated_size_mb, cache_dir):
-            error_msg = (
-                f"Недостаточно места на диске для загрузки модели {model}. "
-                f"Требуется: ~{estimated_size_mb} MB. "
-                f"Проверьте доступное место в {cache_dir}"
-            )
-            self.logger.error(error_msg)
-            raise AudioProcessingError(
-                reason=error_msg,
-            )
-
-        # Загрузка модели с progress bar
-        model_progress = ModelLoadingProgress(model, "модели транскрипции")
-        model_progress.start()
-        model_progress.update(30)  # Начало загрузки
-
-        try:
-            loaded_model = load_model(
-            model,
-            device,
+        # Создаём ключ кэша на основе параметров модели
+        # Используем frozenset для словарей, чтобы сделать их хешируемыми
+        cache_key = self._create_cache_key(
+            model=model,
+            device=device,
             device_index=device_index,
             compute_type=compute_type,
-            asr_options=asr_options,
-            vad_options=vad_options,
             language=language,
             task=task,
-                threads=faster_whisper_threads,
-            )
-        except OSError as e:
-            if "No space left on device" in str(e) or "os error 28" in str(e):
-                error_msg = (
-                    f"Недостаточно места на диске при загрузке модели {model}. "
-                    f"Ошибка: {str(e)}"
-                )
-                self.logger.error(error_msg)
-                raise AudioProcessingError(
-                    reason=error_msg,
-                    original_error=e,
-                ) from e
-            raise
+            asr_options=asr_options,
+            vad_options=vad_options,
+            threads=faster_whisper_threads,
+        )
 
-        model_progress.update(100)
-        model_progress.complete()
+        # Проверяем кэш и загружаем модель только если её нет
+        with self._cache_lock:
+            if cache_key in self._model_cache:
+                self.logger.info(f"   ✅ Использование кэшированной модели транскрипции: {model}")
+                loaded_model = self._model_cache[cache_key]
+            else:
+                # Проверка доступного места перед загрузкой модели
+                # Приблизительные размеры моделей в MB
+                model_sizes = {
+                    "tiny": 75,
+                    "base": 142,
+                    "small": 466,
+                    "medium": 1420,
+                    "large": 2870,
+                    "large-v2": 2870,
+                    "large-v3": 3087,
+                }
+                estimated_size_mb = model_sizes.get(model, 3000)  # По умолчанию 3GB для больших моделей
+
+                cache_dir = get_huggingface_cache_dir()
+                if not check_model_download_space(estimated_size_mb, cache_dir):
+                    error_msg = (
+                        f"Недостаточно места на диске для загрузки модели {model}. "
+                        f"Требуется: ~{estimated_size_mb} MB. "
+                        f"Проверьте доступное место в {cache_dir}"
+                    )
+                    self.logger.error(error_msg)
+                    raise AudioProcessingError(
+                        reason=error_msg,
+                    )
+
+                # Загрузка модели с progress bar
+                model_progress = ModelLoadingProgress(model, "модели транскрипции")
+                model_progress.start()
+                model_progress.update(30)  # Начало загрузки
+
+                try:
+                    self.logger.info(f"   📥 Загрузка модели транскрипции: {model}")
+                    loaded_model = load_model(
+                        model,
+                        device,
+                        device_index=device_index,
+                        compute_type=compute_type,
+                        asr_options=asr_options,
+                        vad_options=vad_options,
+                        language=language,
+                        task=task,
+                        threads=faster_whisper_threads,
+                    )
+                    # Сохраняем модель в кэш
+                    self._model_cache[cache_key] = loaded_model
+                    self.logger.info(f"   💾 Модель транскрипции сохранена в кэш: {model}")
+                except OSError as e:
+                    if "No space left on device" in str(e) or "os error 28" in str(e):
+                        error_msg = (
+                            f"Недостаточно места на диске при загрузке модели {model}. "
+                            f"Ошибка: {str(e)}"
+                        )
+                        self.logger.error(error_msg)
+                        raise AudioProcessingError(
+                            reason=error_msg,
+                            original_error=e,
+                        ) from e
+                    raise
+
+                model_progress.update(100)
+                model_progress.complete()
 
         if progress_callback:
             progress_callback.update_step(50)  # Модель загружена - 50% транскрипции
@@ -148,26 +179,50 @@ class WhisperXTranscriptionService:
         if progress_callback:
             progress_callback.update_step(100)  # Транскрипция завершена
 
-        # Log GPU memory before cleanup
+        # НЕ удаляем модель - она остаётся в кэше для повторного использования
+        # Log GPU memory after transcription
         if torch.cuda.is_available():
             self.logger.debug(
-                f"GPU memory before cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
-                f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
-            )
-
-        # Clean up model
-        gc.collect()
-        torch.cuda.empty_cache()
-        del loaded_model
-
-        # Log GPU memory after cleanup
-        if torch.cuda.is_available():
-            self.logger.debug(
-                f"GPU memory after cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
+                f"GPU memory after transcription: {torch.cuda.memory_allocated() / 1024**2:.2f} MB, "
                 f"available: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
             )
 
         return result  # type: ignore[no-any-return]
+
+    def _create_cache_key(
+        self,
+        model: str,
+        device: str,
+        device_index: int,
+        compute_type: str,
+        language: str,
+        task: str,
+        asr_options: dict[str, Any],
+        vad_options: dict[str, Any],
+        threads: int,
+    ) -> str:
+        """
+        Создаёт ключ кэша на основе параметров модели.
+        
+        Args:
+            model: Название модели
+            device: Устройство
+            device_index: Индекс устройства
+            compute_type: Тип вычислений
+            language: Язык
+            task: Задача
+            asr_options: Опции ASR
+            vad_options: Опции VAD
+            threads: Количество потоков
+            
+        Returns:
+            Строковый ключ для кэша
+        """
+        # Сортируем словари для консистентности
+        asr_str = str(sorted(asr_options.items())) if asr_options else ""
+        vad_str = str(sorted(vad_options.items())) if vad_options else ""
+        
+        return f"{model}_{device}_{device_index}_{compute_type}_{language}_{task}_{asr_str}_{vad_str}_{threads}"
 
     def load_model(
         self,
@@ -214,11 +269,27 @@ class WhisperXTranscriptionService:
             threads=faster_whisper_threads,
         )
 
-    def unload_model(self) -> None:
-        """Unload WhisperX model and free GPU memory."""
+    def unload_model(self, cache_key: str | None = None) -> None:
+        """
+        Unload WhisperX model and free GPU memory.
+        
+        Args:
+            cache_key: Ключ модели для удаления из кэша. Если None, удаляет все модели.
+        """
+        with self._cache_lock:
+            if cache_key:
+                if cache_key in self._model_cache:
+                    del self._model_cache[cache_key]
+                    self.logger.debug(f"Model {cache_key} unloaded from cache")
+            else:
+                # Удаляем все модели из кэша
+                self._model_cache.clear()
+                self.logger.debug("All models unloaded from cache")
+        
         if self.model:
             del self.model
             self.model = None
-            gc.collect()
-            torch.cuda.empty_cache()
-            self.logger.debug("Model unloaded and GPU memory cleared")
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+        self.logger.debug("GPU memory cleared")

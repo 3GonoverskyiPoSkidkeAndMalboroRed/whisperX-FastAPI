@@ -269,29 +269,40 @@ def process_audio_common(
 
     Args:
         params (SpeechToTextProcessingParams): The speech-to-text processing parameters
-        transcription_service: Transcription service (defaults to WhisperX if None)
-        alignment_service: Alignment service (defaults to WhisperX if None)
-        diarization_service: Diarization service (defaults to WhisperX if None)
-        speaker_service: Speaker assignment service (defaults to WhisperX if None)
+        transcription_service: Transcription service (defaults to container singleton if None)
+        alignment_service: Alignment service (defaults to container singleton if None)
+        diarization_service: Diarization service (defaults to container singleton if None)
+        speaker_service: Speaker assignment service (defaults to container singleton if None)
 
     Returns:
         None: The result is saved in the transcription requests dict.
     """
-    # Import here to avoid circular dependency
-    from app.infrastructure.ml import (
-        WhisperXAlignmentService,
-        WhisperXDiarizationService,
-        WhisperXSpeakerAssignmentService,
-        WhisperXTranscriptionService,
-    )
-
-    # Use provided services or create default WhisperX implementations
-    transcription_svc = transcription_service or WhisperXTranscriptionService()
-    alignment_svc = alignment_service or WhisperXAlignmentService()
-    diarization_svc = diarization_service or WhisperXDiarizationService(
-        hf_token=Config.HF_TOKEN or ""
-    )
-    speaker_svc = speaker_service or WhisperXSpeakerAssignmentService()
+    # Получаем сервисы из контейнера, если не переданы
+    # Это позволяет использовать кэшированные модели из Singleton сервисов
+    from app.api.dependencies import get_container
+    
+    container = get_container()
+    if container is None:
+        # Fallback на создание новых экземпляров, если контейнер не инициализирован
+        from app.infrastructure.ml import (
+            WhisperXAlignmentService,
+            WhisperXDiarizationService,
+            WhisperXSpeakerAssignmentService,
+            WhisperXTranscriptionService,
+        )
+        logger.warning("Container not initialized, creating new service instances")
+        transcription_svc = transcription_service or WhisperXTranscriptionService()
+        alignment_svc = alignment_service or WhisperXAlignmentService()
+        diarization_svc = diarization_service or WhisperXDiarizationService(
+            hf_token=Config.HF_TOKEN or ""
+        )
+        speaker_svc = speaker_service or WhisperXSpeakerAssignmentService()
+    else:
+        # Используем сервисы из контейнера (Singleton) для переиспользования моделей
+        transcription_svc = transcription_service or container.transcription_service()
+        alignment_svc = alignment_service or container.alignment_service()
+        diarization_svc = diarization_service or container.diarization_service()
+        speaker_svc = speaker_service or container.speaker_assignment_service()
 
     # Create repository for this background task
     session = SessionLocal()
