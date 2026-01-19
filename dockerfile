@@ -38,6 +38,7 @@ COPY pyproject.toml .
 COPY uv.lock .
 COPY app app/
 COPY tests tests/
+COPY scripts scripts/
 COPY app/gunicorn_logging.conf .
 
 # Copy local torch and torchaudio wheel files if they exist
@@ -78,8 +79,11 @@ RUN if [ -f torch-2.8.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl ] || [ -f to
 
 EXPOSE 8000
 
+# Make entrypoint script executable
+RUN chmod +x scripts/docker-entrypoint.sh
+
 # Health check to verify the application is responsive
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl --fail http://localhost:8000/health || exit 1
 
-ENTRYPOINT ["uv", "run", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "0", "--log-config", "gunicorn_logging.conf", "app.main:app", "-k", "uvicorn.workers.UvicornWorker"]
+ENTRYPOINT ["/bin/bash", "scripts/docker-entrypoint.sh"]

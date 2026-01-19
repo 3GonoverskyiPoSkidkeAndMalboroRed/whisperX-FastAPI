@@ -14,6 +14,15 @@ services:
     container_name: whisperx-container
     env_file:
       - .env
+    # Переменные окружения для предзагрузки моделей при запуске контейнера:
+    # PRELOAD_TRANSCRIPTION_MODELS - список моделей транскрипции через запятую (например: "tiny,base,large-v2")
+    # PRELOAD_ALIGNMENT_LANGUAGES - список языков для моделей выравнивания через запятую (например: "en,ru")
+    # PRELOAD_DIARIZATION - включить предзагрузку модели диаризации (true/false, требует HF_TOKEN)
+    # Пример:
+    # environment:
+    #   - PRELOAD_TRANSCRIPTION_MODELS=tiny,base,large-v2
+    #   - PRELOAD_ALIGNMENT_LANGUAGES=en,ru
+    #   - PRELOAD_DIARIZATION=true
     ports:
       - "8123:8000"
     volumes:
