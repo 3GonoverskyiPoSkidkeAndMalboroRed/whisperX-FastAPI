@@ -372,7 +372,20 @@ def process_audio_common(
             max_speakers=params.diarization_params.max_speakers,
             progress_callback=progress,
         )
-        num_speakers = len(diarization_segments['speaker'].unique()) if hasattr(diarization_segments, 'speaker') else "неизвестно"
+        # Правильная проверка количества спикеров для DataFrame
+        if isinstance(diarization_segments, pd.DataFrame) and 'speaker' in diarization_segments.columns:
+            num_speakers = len(diarization_segments['speaker'].unique())
+            unique_speakers = diarization_segments['speaker'].unique().tolist()
+            logger.info(f"   📊 Результаты диаризации: обнаружено {num_speakers} спикеров: {unique_speakers}")
+            if num_speakers == 1:
+                logger.warning(
+                    f"   ⚠️  Диаризация обнаружила только одного спикера ({unique_speakers[0]}). "
+                    f"Возможно, модель не смогла различить нескольких спикеров. "
+                    f"Попробуйте указать min_speakers и max_speakers явно."
+                )
+        else:
+            num_speakers = "неизвестно"
+            logger.warning(f"   ⚠️  Не удалось определить количество спикеров из результатов диаризации")
         progress.complete_step("Диаризация", f"Обнаружено спикеров: {num_speakers}")
 
         # Этап 4: Назначение спикеров
