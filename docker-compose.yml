@@ -18,11 +18,15 @@ services:
     # PRELOAD_TRANSCRIPTION_MODELS - список моделей транскрипции через запятую (например: "tiny,base,large-v2")
     # PRELOAD_ALIGNMENT_LANGUAGES - список языков для моделей выравнивания через запятую (например: "en,ru")
     # PRELOAD_DIARIZATION - включить предзагрузку модели диаризации (true/false, требует HF_TOKEN)
+    # MAX_CONCURRENT_GPU_TASKS - максимальное количество одновременных задач на GPU (по умолчанию: 2)
+    # TASK_WORKER_THREADS - количество потоков-воркеров для обработки задач (по умолчанию: 4)
     # Пример:
     # environment:
     #   - PRELOAD_TRANSCRIPTION_MODELS=tiny,base,large-v2
     #   - PRELOAD_ALIGNMENT_LANGUAGES=en,ru
     #   - PRELOAD_DIARIZATION=true
+    #   - MAX_CONCURRENT_GPU_TASKS=2
+    #   - TASK_WORKER_THREADS=4
     ports:
       - "8123:8000"
     volumes:

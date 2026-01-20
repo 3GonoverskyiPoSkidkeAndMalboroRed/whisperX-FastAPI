@@ -59,11 +59,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Args:
         app (FastAPI): The FastAPI application instance.
     """
+    from app.services.task_queue_manager import TaskQueueManager  # noqa: E402
+
     logging.info("Application lifespan started - dependency container initialized")
+
+    # Инициализация менеджера очереди задач для параллельной обработки на GPU
+    task_queue_manager = TaskQueueManager()
+    task_queue_manager.start()
+    app.state.task_queue = task_queue_manager
+    logging.info("Task queue manager initialized")
 
     save_openapi_json(app)
     generate_db_schema(Base.metadata.tables.values())
     yield
+
+    # Остановка менеджера очереди задач
+    if hasattr(app.state, "task_queue"):
+        app.state.task_queue.stop()
+        logging.info("Task queue manager stopped")
 
     # Clean up container on shutdown
     logging.info("Shutting down application")

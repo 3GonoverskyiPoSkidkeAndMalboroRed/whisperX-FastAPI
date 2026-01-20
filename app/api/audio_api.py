@@ -10,10 +10,10 @@ from uuid import uuid4
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
+    Request,
     UploadFile,
 )
 
@@ -50,7 +50,7 @@ stt_router = APIRouter()
 
 @stt_router.post("/speech-to-text", tags=["Speech-2-Text"])
 async def speech_to_text(
-    background_tasks: BackgroundTasks,
+    request: Request,
     model_params: WhisperModelParams = Depends(),
     align_params: AlignmentParams = Depends(),
     diarize_params: DiarizationParams = Depends(),
@@ -65,7 +65,7 @@ async def speech_to_text(
     Process an uploaded audio file for speech-to-text conversion.
 
     Args:
-        background_tasks (BackgroundTasks): Background tasks dependency.
+        request (Request): FastAPI request object for accessing app state.
         model_params (WhisperModelParams): Whisper model parameters.
         align_params (AlignmentParams): Alignment parameters.
         diarize_params (DiarizationParams): Diarization parameters.
@@ -130,8 +130,13 @@ async def speech_to_text(
         temp_file_path=temp_file,
     )
 
-    background_tasks.add_task(process_audio_common, audio_params)
-    logger.info("Background task scheduled for processing: ID %s", identifier)
+    # Используем очередь задач вместо BackgroundTasks для параллельной обработки
+    task_queue = request.app.state.task_queue
+    task_queue.submit_task(process_audio_common, audio_params)
+    queue_size = task_queue.task_queue.qsize()
+    logger.info(
+        f"Задача {identifier} добавлена в очередь. Размер очереди: {queue_size}"
+    )
 
     return Response(identifier=identifier, message="Task queued")
 
@@ -140,7 +145,7 @@ async def speech_to_text(
     "/speech-to-text-url", callbacks=task_callback_router.routes, tags=["Speech-2-Text"]
 )
 async def speech_to_text_url(
-    background_tasks: BackgroundTasks,
+    request: Request,
     model_params: WhisperModelParams = Depends(),
     align_params: AlignmentParams = Depends(),
     diarize_params: DiarizationParams = Depends(),
@@ -155,7 +160,7 @@ async def speech_to_text_url(
     Process an audio file from a URL for speech-to-text conversion.
 
     Args:
-        background_tasks (BackgroundTasks): Background tasks dependency.
+        request (Request): FastAPI request object for accessing app state.
         model_params (WhisperModelParams): Whisper model parameters.
         align_params (AlignmentParams): Alignment parameters.
         diarize_params (DiarizationParams): Diarization parameters.
@@ -217,7 +222,34 @@ async def speech_to_text_url(
         temp_file_path=temp_audio_file,
     )
 
-    background_tasks.add_task(process_audio_common, audio_params)
-    logger.info("Background task scheduled for processing: ID %s", identifier)
+    # Используем очередь задач вместо BackgroundTasks для параллельной обработки
+    task_queue = request.app.state.task_queue
+    task_queue.submit_task(process_audio_common, audio_params)
+    queue_size = task_queue.task_queue.qsize()
+    logger.info(
+        f"Задача {identifier} добавлена в очередь. Размер очереди: {queue_size}"
+    )
 
     return Response(identifier=identifier, message="Task queued")
+
+
+@stt_router.get("/queue/stats", tags=["Speech-2-Text"], summary="Get task queue statistics")
+async def get_queue_stats(request: Request) -> dict:
+    """
+    Получить статистику очереди задач.
+
+    Returns:
+        dict: Статистика очереди задач включая размер очереди, количество обработанных задач и т.д.
+    """
+    task_queue = request.app.state.task_queue
+    stats = task_queue.get_stats()
+    
+    return {
+        "queue_size": stats["queue_size"],
+        "total_submitted": stats["total_submitted"],
+        "total_processed": stats["total_processed"],
+        "total_failed": stats["total_failed"],
+        "max_concurrent_tasks": task_queue.max_concurrent_tasks,
+        "num_worker_threads": task_queue.num_worker_threads,
+        "active_workers": len([t for t in task_queue.worker_threads if t.is_alive()]),
+    }
